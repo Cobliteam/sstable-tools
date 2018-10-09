@@ -4,13 +4,20 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.ResultSet;
+import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.LongType;
+import org.apache.cassandra.db.marshal.TimestampType;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.lang3.StringUtils;
 
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.stream.Stream;
 
 public class TableTransformer {
 
@@ -24,17 +31,27 @@ public class TableTransformer {
     public static final String ANSI_CYAN = "\u001B[36m";
     public static final String ANSI_WHITE = "\u001B[37m";
 
-    public static String colValue(ResultSet results, List<ByteBuffer> row, int i) throws Exception {
+    public boolean rawTimestamps = false;
+
+    public TableTransformer() {
+    }
+
+    public String colValue(ResultSet results, List<ByteBuffer> row, int i) throws Exception {
         ByteBuffer v = row.get(i).duplicate();
         String ret = "null";
         if (v != null) {
             EnumSet<ResultSet.Flag> flags = (EnumSet<ResultSet.Flag>) CassandraUtils.readPrivate(results.metadata, "flags");
             if (flags.contains(ResultSet.Flag.NO_METADATA)) {
                 ret = "0x" + ByteBufferUtil.bytesToHex(v);
-            } else if (results.metadata.names.get(i).type.isCollection()) {
-                ret = results.metadata.names.get(i).type.getSerializer().deserialize(v).toString();
             } else {
-                ret = results.metadata.names.get(i).type.getString(v);
+                AbstractType<?> type = results.metadata.names.get(i).type;
+                if (type.isCollection()) {
+                    ret = type.getSerializer().deserialize(v).toString();
+                } else if (type.isValueCompatibleWith(TimestampType.instance) && rawTimestamps) {
+                    ret = LongType.instance.getSerializer().deserialize(v).toString();
+                } else {
+                    ret = type.getString(v);
+                }
             }
         }
         return ret;
@@ -47,7 +64,27 @@ public class TableTransformer {
         }
     }
 
-    public static void dumpResults(CFMetaData cfm, ResultSet results, PrintStream out) throws Exception {
+    public void dumpResultsAsCsv(CFMetaData cfm, ResultSet results, PrintStream out, boolean flushAfterLine)
+            throws Exception {
+        int numCols =results.metadata.names.size();
+        ArrayList<String> colData = new ArrayList<>(numCols);
+
+        CSVPrinter printer = new CSVPrinter(out, CSVFormat.DEFAULT);
+        for (int row = 0; row < results.rows.size(); row++) {
+            List<ByteBuffer> rowData = results.rows.get(row);
+
+            colData.clear();
+            for (int col = 0; col < numCols; col++) {
+                colData.add(colValue(results, rowData, col));
+            }
+
+            printer.printRecord(colData);
+            if (flushAfterLine)
+                printer.flush();
+        }
+    }
+
+    public void dumpResults(CFMetaData cfm, ResultSet results, PrintStream out) throws Exception {
         if(results.rows.isEmpty()) return; // empty
         // find spacing
         int[] padding = new int[results.rows.get(0).size()];

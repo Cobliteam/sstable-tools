@@ -91,7 +91,7 @@ public class TestSelect {
         ResultSet result = q.getResults().getResultSet();
         Assert.assertEquals(1, result.rows.size());
         Assert.assertEquals("count", result.metadata.names.get(0).name.toString());
-        TableTransformer.dumpResults(cfdata, result, System.out);
+        new TableTransformer().dumpResults(cfdata, result, System.out);
     }
 
     @Test
@@ -103,11 +103,12 @@ public class TestSelect {
         ResultSet result = q.getResults().getResultSet();
         Assert.assertEquals(2, result.rows.size());
 
-        Assert.assertEquals("2016-04-03", TableTransformer.colValue(result, result.rows.get(0), 1));
-        Assert.assertEquals("71.5", TableTransformer.colValue(result, result.rows.get(0), 2));
-        Assert.assertEquals("2016-04-04", TableTransformer.colValue(result, result.rows.get(1), 1));
-        Assert.assertEquals("73.5", TableTransformer.colValue(result, result.rows.get(1), 2));
-        TableTransformer.dumpResults(cfdata, result, System.out);
+        TableTransformer transformer = new TableTransformer();
+        Assert.assertEquals("2016-04-03", transformer.colValue(result, result.rows.get(0), 1));
+        Assert.assertEquals("71.5", transformer.colValue(result, result.rows.get(0), 2));
+        Assert.assertEquals("2016-04-04", transformer.colValue(result, result.rows.get(1), 1));
+        Assert.assertEquals("73.5", transformer.colValue(result, result.rows.get(1), 2));
+        transformer.dumpResults(cfdata, result, System.out);
     }
 
     @Test
@@ -119,7 +120,7 @@ public class TestSelect {
         Query q = new Query(query, Collections.singleton(path), cfdata);
         ResultSet result = q.getResults().getResultSet();
         Assert.assertEquals(2, result.rows.size());
-        TableTransformer.dumpResults(cfdata, result, System.out);
+        new TableTransformer().dumpResults(cfdata, result, System.out);
     }
 
     @Test
@@ -130,6 +131,6 @@ public class TestSelect {
         Query q = new Query(query, Collections.singleton(path), cfdata);
         ResultSet result = q.getResults().getResultSet();
         Assert.assertEquals(1, result.rows.size());
-        TableTransformer.dumpResults(cfdata, result, System.out);
+        new TableTransformer().dumpResults(cfdata, result, System.out);
     }
 }

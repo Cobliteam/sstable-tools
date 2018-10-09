@@ -16,6 +16,7 @@ import jline.console.history.FileHistory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
+import org.apache.cassandra.cql3.ResultSet;
 import org.apache.cassandra.cql3.statements.CreateTableStatement;
 import org.apache.cassandra.cql3.statements.CreateTypeStatement;
 import org.apache.cassandra.cql3.statements.ParsedStatement;
@@ -54,6 +55,12 @@ public class Cqlsh {
     private static final String SCHEMA_OPTION = "s";
 
     private static final String FILE_OPTION = "f";
+
+    private static final String CSV_OPTION = "csv";
+
+    private static final String FLUSH_OPTION = "flush";
+
+    private static final String RAW_TIMESTAMPS_OPTION = "raw_timestamps";
 
     private static final String MISSING_SSTABLES = errorMsg("No sstables set. Set the sstables using the 'USE pathToSSTable' command.");
 
@@ -137,8 +144,14 @@ public class Cqlsh {
         Option schemaOption = new Option(SCHEMA_OPTION, true, "Schema file to use.");
         schemaOption.setRequired(false);
         Option fileOption = new Option(FILE_OPTION, true, "Execute commands from FILE, then exit.");
+        Option csvOption = new Option(CSV_OPTION, "Write output as CSV");
+        Option flushoption = new Option(FLUSH_OPTION, "Flush output after writing each row");
+        Option rawTimestampsOption = new Option(RAW_TIMESTAMPS_OPTION, "Write timestamps as raw integers, not dates");
         options.addOption(schemaOption);
         options.addOption(fileOption);
+        options.addOption(csvOption);
+        options.addOption(flushoption);
+        options.addOption(rawTimestampsOption);
     }
 
     public Set<File> sstables = Sets.newHashSet();
@@ -155,6 +168,10 @@ public class Cqlsh {
     boolean preferences = true;
     Config config;
 
+    boolean outputCsv = false;
+    boolean outputFlush  = false;
+    TableTransformer transformer = new TableTransformer();
+
     public Cqlsh() {
         try {
             Config applicationConfig = ConfigFactory.defaultApplication();
@@ -170,20 +187,20 @@ public class Cqlsh {
 
             boolean persistInfo = false;
             if (sstables.size() > 0) {
-                System.out.println(infoMsg("Using previously defined sstables: " + sstables));
+                System.err.println(infoMsg("Using previously defined sstables: " + sstables));
                 persistInfo = true;
             }
 
             preferences = config.getBoolean(PROP_PREFERENCES_ENABLED);
             String schema = config.getString(PROP_SCHEMA);
             if (!Strings.isNullOrEmpty(schema)) {
-                System.out.printf(infoMsg("Using previously defined schema:%n%s%n"), schema);
+                System.err.printf(infoMsg("Using previously defined schema:%n%s%n"), schema);
                 persistInfo = true;
                 CassandraUtils.cqlOverride = schema;
             }
 
             if (persistInfo) {
-                System.out.println(PERSISTENCE_NOTE);
+                System.err.println(PERSISTENCE_NOTE);
             }
 
             history = new FileHistory(HISTORY_FILE);
@@ -236,6 +253,16 @@ public class Cqlsh {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    public void setOutputOptions(boolean csv, boolean flush, boolean rawTimestamps) {
+        this.outputCsv = csv;
+        this.outputFlush = flush;
+        this.transformer.rawTimestamps = rawTimestamps;
+    }
+
+    public void setPaging(boolean paging) {
+        this.paging = paging;
     }
 
     private static AggregateCompleter caselessCompleter(String... args) {
@@ -296,7 +323,7 @@ public class Cqlsh {
             }
         }
         for (File f : sstables) {
-            System.out.println("Using: " + f.getAbsolutePath());
+            System.err.println("Using: " + f.getAbsolutePath());
         }
         if (!sstables.isEmpty()) {
             metadata = CassandraUtils.tableFromBestSource(sstables.iterator().next());
@@ -307,13 +334,13 @@ public class Cqlsh {
         String path = command.substring(6).trim().replaceAll("\"", "");
 
         if (path.equalsIgnoreCase("off")) {
-            System.out.println(DISABLING_SCHEMA);
+            System.err.println(DISABLING_SCHEMA);
             CassandraUtils.cqlOverride = null;
         } else if (Strings.isNullOrEmpty(path)) {
             if (!Strings.isNullOrEmpty(CassandraUtils.cqlOverride)) {
-                System.out.printf(USER_DEFINED_SCHEMA, CassandraUtils.cqlOverride);
+                System.err.printf(USER_DEFINED_SCHEMA, CassandraUtils.cqlOverride);
             } else {
-                System.out.println(NO_USER_DEFINED_SCHEMA);
+                System.err.println(NO_USER_DEFINED_SCHEMA);
             }
         } else {
             File schemaFile = new File(path);
@@ -325,7 +352,7 @@ public class Cqlsh {
                     ParsedStatement statement = QueryProcessor.parseStatement(cql);
                     if (statement instanceof CreateTableStatement.RawStatement) {
                         CassandraUtils.cqlOverride = cql;
-                        System.out.printf(IMPORTED_SCHEMA, schemaFile.getAbsolutePath());
+                        System.err.printf(IMPORTED_SCHEMA, schemaFile.getAbsolutePath());
                     } else {
                         System.err.printf(FAILED_TO_IMPORT_SCHEMA, schemaFile.getAbsoluteFile(), "Wrong type of statement, " + statement.getClass());
                     }
@@ -339,7 +366,7 @@ public class Cqlsh {
 
     public void doDump(String command) throws Exception {
         if (sstables.isEmpty()) {
-            System.out.println(MISSING_SSTABLES);
+            System.err.println(MISSING_SSTABLES);
             return;
         }
         Query query;
@@ -412,14 +439,25 @@ public class Cqlsh {
         }
     }
 
+    private void dumpResults(ResultSet results) throws Exception {
+        if (outputCsv) {
+            transformer.dumpResultsAsCsv(metadata, results, System.out, outputFlush);
+        } else {
+            transformer.dumpResults(metadata, results, System.out);
+            if (outputFlush)
+                System.out.flush();
+        }
+    }
+
     public void doQuery(String command) throws Exception {
         Query q = getQuery(command);
-        System.out.println();
+        System.err.println();
         if (q == null) {
-            System.out.println(MISSING_SSTABLES);
+            System.err.println(MISSING_SSTABLES);
         } else if (paging) {
             ResultSetData resultData = getQuery(command).getResults(pageSize);
-            TableTransformer.dumpResults(metadata, resultData.getResultSet(), System.out);
+            dumpResults(resultData.getResultSet());
+
             boolean terminated = false;
             if (resultData.getPagingData().hasMorePages()) {
                 console.setHistoryEnabled(false);
@@ -437,18 +475,18 @@ public class Cqlsh {
                         break;
                     }
                     resultData = getQuery(command).getResults(pageSize, resultData.getPagingData());
-                    TableTransformer.dumpResults(metadata, resultData.getResultSet(), System.out);
+                    dumpResults(resultData.getResultSet());
                 }
             }
             if (!terminated) {
-                System.out.printf("%n(%s rows)%n", resultData.getPagingData().getRowCount());
+                System.err.printf("%n(%s rows)%n", resultData.getPagingData().getRowCount());
             }
             console.setHistoryEnabled(true);
             console.setPrompt(prompt);
         } else {
             ResultSetData resultData = getQuery(command).getResults();
-            TableTransformer.dumpResults(metadata, resultData.getResultSet(), System.out);
-            System.out.printf("%n(%s rows)%n", resultData.getPagingData().getRowCount());
+            dumpResults(resultData.getResultSet());
+            System.err.printf("%n(%s rows)%n", resultData.getPagingData().getRowCount());
         }
     }
 
@@ -502,9 +540,9 @@ public class Cqlsh {
         switch (mode) {
             case "":
                 if (paging) {
-                    System.out.printf(PAGING_IS_ENABLED, pageSize);
+                    System.err.printf(PAGING_IS_ENABLED, pageSize);
                 } else {
-                    System.out.println(PAGING_IS_DISABLED);
+                    System.err.println(PAGING_IS_DISABLED);
                 }
                 break;
             case "on":
@@ -512,7 +550,7 @@ public class Cqlsh {
                     System.err.println(QUERY_PAGING_ALREADY_ENABLED);
                 } else {
                     paging = true;
-                    System.out.printf(QUERY_PAGING_ENABLED, pageSize);
+                    System.err.printf(QUERY_PAGING_ENABLED, pageSize);
                 }
                 break;
             case "off":
@@ -520,14 +558,14 @@ public class Cqlsh {
                     System.err.println(QUERY_PAGING_ALREADY_DISABLED);
                 } else {
                     paging = false;
-                    System.out.println(QUERY_PAGING_DISABLED);
+                    System.err.println(QUERY_PAGING_DISABLED);
                 }
                 break;
             default:
                 try {
                     pageSize = Integer.parseInt(mode);
                     paging = true;
-                    System.out.printf(QUERY_PAGING_ENABLED, pageSize);
+                    System.err.printf(QUERY_PAGING_ENABLED, pageSize);
                 } catch (NumberFormatException e) {
                     System.err.println(IMPROPER_PAGING_COMMAND);
                 }
@@ -540,9 +578,9 @@ public class Cqlsh {
         switch (mode) {
             case "":
                 if (preferences) {
-                    System.out.printf(PREFERENCES_ARE_ENABLED, generatePreferencesConfigString(false));
+                    System.err.printf(PREFERENCES_ARE_ENABLED, generatePreferencesConfigString(false));
                 } else {
-                    System.out.println(PREFERENCES_ARE_DISABLED);
+                    System.err.println(PREFERENCES_ARE_DISABLED);
                 }
                 break;
             case "on":
@@ -550,13 +588,13 @@ public class Cqlsh {
                     System.err.println(PREFERENCES_ALREADY_ENABLED);
                 } else {
                     preferences = true;
-                    System.out.printf(PREFERENCES_ENABLED, generatePreferencesConfigString(false));
+                    System.err.printf(PREFERENCES_ENABLED, generatePreferencesConfigString(false));
                 }
                 break;
             case "off":
                 if (preferences) {
                     preferences = false;
-                    System.out.println(PREFERENCES_DISABLED);
+                    System.err.println(PREFERENCES_DISABLED);
                 } else {
                     System.err.println(PREFERENCES_ALREADY_DISABLED);
                 }
@@ -706,6 +744,13 @@ public class Cqlsh {
         }
 
         final Cqlsh sh = new Cqlsh();
+        boolean outputCsv = cmd.hasOption(CSV_OPTION);
+        boolean outputFlush = cmd.hasOption(FLUSH_OPTION);
+        boolean rawTimestamps = cmd.hasOption(RAW_TIMESTAMPS_OPTION);
+
+        sh.setOutputOptions(outputCsv, outputFlush, rawTimestamps);
+        if (outputCsv)
+            sh.setPaging(false);
 
         String schemaPath = cmd.getOptionValue(SCHEMA_OPTION);
         if (schemaPath != null) {
@@ -764,9 +809,9 @@ public class Cqlsh {
                 } catch (RuntimeException e) {
                     if (e.getMessage().startsWith("Unknown column")) {
                         if(Strings.isNullOrEmpty(CassandraUtils.cqlOverride)) {
-                            System.out.printf("%sUnknown Column. Likely the schema does not match across sstables. Try defining your schema with an appropriate '%sCREATE TABLE%s' statement.%s%n", ANSI_RED, "\u001B[1;31m", "\u001B[0;31m", ANSI_RESET);
+                            System.err.printf("%sUnknown Column. Likely the schema does not match across sstables. Try defining your schema with an appropriate '%sCREATE TABLE%s' statement.%s%n", ANSI_RED, "\u001B[1;31m", "\u001B[0;31m", ANSI_RESET);
                         } else {
-                            System.out.printf("%sUnknown Column. Likely the schema is not correct for this sstable. Try '%sSCHEMA OFF%s' to use metadata from statistics.%s%n", ANSI_RED, "\u001B[1;31m", "\u001B[0;31m", ANSI_RESET);
+                            System.err.printf("%sUnknown Column. Likely the schema is not correct for this sstable. Try '%sSCHEMA OFF%s' to use metadata from statistics.%s%n", ANSI_RED, "\u001B[1;31m", "\u001B[0;31m", ANSI_RESET);
                         }
                     } else {
                         e.printStackTrace();
